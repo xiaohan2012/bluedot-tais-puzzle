@@ -1,0 +1,6 @@
+venv/
+__marimo__/
+.claude/
+__pycache__/
+*.pyc
+.DS_Store
