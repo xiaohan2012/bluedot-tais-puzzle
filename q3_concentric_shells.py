@@ -50,6 +50,19 @@ def _(mo):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    # Target geometry for the aux loss
+    shape_choice = mo.ui.dropdown(
+        options=["concentric_shells", "two_moons"],
+        value="concentric_shells",
+        label="Target shape for feature F",
+    )
+    shape_choice
+
+    return (shape_choice,)
+
+
 app._unparsable_cell(
     r"""
      = mo.ui.dropdown(
@@ -71,7 +84,7 @@ def _(mo):
         show_value=True,
     )
     alpha_slider
-    return
+    return (alpha_slider,)
 
 
 @app.cell
@@ -82,7 +95,7 @@ def _(mo):
         show_value=True,
     )
     beta_slider
-    return
+    return (beta_slider,)
 
 
 @app.cell
@@ -90,7 +103,7 @@ def _(mo):
     r0_slider = mo.ui.slider(start=0.5, stop=3.0, step=0.1, value=1.0, label="R₀ (radius for F=0)", show_value=True)
     r1_slider = mo.ui.slider(start=2.0, stop=8.0, step=0.1, value=4.0, label="R₁ (radius for F=1)", show_value=True)
     mo.hstack([r0_slider, r1_slider])
-    return
+    return r0_slider, r1_slider
 
 
 @app.cell
@@ -126,7 +139,7 @@ def _(Fnn, nn):
             h = Fnn.relu(self.l4(h2))
             return self.l5(h)
 
-    return
+    return (HeadShell,)
 
 
 @app.cell
@@ -156,7 +169,7 @@ def _(SentenceTransformer, json, np, torch):
     te_emb = torch.from_numpy(enc.encode(te_texts, convert_to_numpy=True, batch_size=64, show_progress_bar=False))
 
     print(f"train embeddings: {tuple(tr_emb.shape)}   test: {tuple(te_emb.shape)}")
-    return (feature_names,)
+    return feature_names, te_emb, te_labels, tr_emb, tr_labels
 
 
 @app.cell
@@ -167,11 +180,26 @@ def _(mo):
     return
 
 
-app._unparsable_cell(
-    r"""
+@app.cell
+def _(
+    HeadShell,
+    alpha_slider,
+    beta_slider,
+    feature_choice,
+    feature_names,
+    nn,
+    r0_slider,
+    r1_slider,
+    shape_choice,
+    te_emb,
+    te_labels,
+    torch,
+    tr_emb,
+    tr_labels,
+):
     torch.manual_seed(0)
 
-    f_idx = feature_names.index(.value)
+    f_idx = feature_names.index(feature_choice.value)
     R0 = r0_slider.value
     R1 = r1_slider.value
     alpha = alpha_slider.value
@@ -190,6 +218,38 @@ app._unparsable_cell(
     batch_size = 128
     n_train = tr_X.shape[0]
 
+    # Two-moons targets: matches sklearn.datasets.make_moons interleaving.
+    # F=0: upper semicircle (cos θ, sin θ) for θ ∈ [0, π]
+    # F=1: lower semicircle shifted to interleave: (1 - cos θ, 0.5 - sin θ)
+    _n_targets = 50
+    _theta = torch.linspace(0.0, float(torch.pi), _n_targets)
+    _moon_0 = torch.stack([torch.cos(_theta),       torch.sin(_theta)], dim=1)         # F=0
+    _moon_1 = torch.stack([1.0 - torch.cos(_theta), 0.5 - torch.sin(_theta)], dim=1)   # F=1
+
+    def shape_loss(h2c, y_F):
+        if shape_choice.value == "concentric_shells":
+            norms = h2c.norm(dim=1)
+            tgt = torch.where(y_F == 1, torch.tensor(R1), torch.tensor(R0))
+            return ((norms - tgt) ** 2).mean()
+        xy = h2c[:, :2]
+        d_0 = ((xy.unsqueeze(1) - _moon_0.unsqueeze(0)) ** 2).sum(dim=2)
+        d_1 = ((xy.unsqueeze(1) - _moon_1.unsqueeze(0)) ** 2).sum(dim=2)
+        return torch.where(y_F == 1, d_1.min(dim=1).values, d_0.min(dim=1).values).mean()
+
+    def iso_loss(h2c, y_F):
+        if shape_choice.value == "concentric_shells":
+            sub = h2c
+        else:
+            sub = h2c[:, 2:]
+        norms = sub.norm(dim=1)
+        dirs = sub / (norms.unsqueeze(1) + 1e-6)
+        mp = (y_F == 1).float().unsqueeze(1)
+        mn = 1.0 - mp
+        n_p = mp.sum().clamp(min=1.0); n_n = mn.sum().clamp(min=1.0)
+        mean_p = (dirs * mp).sum(0) / n_p
+        mean_n = (dirs * mn).sum(0) / n_n
+        return (mean_p - mean_n).pow(2).sum()
+
     hist_main = []
     hist_rad = []
     hist_iso = []
@@ -203,40 +263,26 @@ app._unparsable_cell(
             y_all = tr_y[idx]
             y_F = tr_y_F[idx]
 
-            h2 = model.hidden2(x)                       # (B, 64), signed
-            h2c = h2 - h2.mean(dim=0, keepdim=True)     # batch-centered
-            norms = h2c.norm(dim=1)                     # (B,)
-            target_R = torch.where(y_F == 1, torch.tensor(R1), torch.tensor(R0))
-            L_radial = ((norms - target_R) ** 2).mean()
+            h2 = model.hidden2(x)
+            h2c = h2 - h2.mean(dim=0, keepdim=True)
 
-            dirs = h2c / (norms.unsqueeze(1) + 1e-6)
-            # Class-conditional mean directions; iso loss = squared dist between them
-            mask_pos = (y_F == 1).float().unsqueeze(1)
-            mask_neg = 1.0 - mask_pos
-            n_pos = mask_pos.sum().clamp(min=1.0)
-            n_neg = mask_neg.sum().clamp(min=1.0)
-            mean_pos = (dirs * mask_pos).sum(dim=0) / n_pos
-            mean_neg = (dirs * mask_neg).sum(dim=0) / n_neg
-            L_iso = (mean_pos - mean_neg).pow(2).sum()
-
-            # Main task: standard 8-way BCE; forward uses uncentered h2
+            L_shape = shape_loss(h2c, y_F)
+            L_iso = iso_loss(h2c, y_F)
             logits = model.l5(torch.relu(model.l4(h2)))
             L_main = bce(logits, y_all)
-
-            loss = L_main + alpha * L_radial + beta * L_iso
+            loss = L_main + alpha * L_shape + beta * L_iso
             opt.zero_grad(); loss.backward(); opt.step()
 
-            ep_main += L_main.item(); ep_rad += L_radial.item(); ep_iso += L_iso.item(); n_batches += 1
+            ep_main += L_main.item(); ep_rad += L_shape.item(); ep_iso += L_iso.item(); n_batches += 1
 
         hist_main.append(ep_main / n_batches)
         hist_rad.append(ep_rad / n_batches)
         hist_iso.append(ep_iso / n_batches)
 
-    print(f"Done.  F={.value}  α={alpha}  β={beta}  R0={R0}  R1={R1}")
-    print(f"Final L_main = {hist_main[-1]:.3f}   L_radial = {hist_rad[-1]:.3f}   L_iso = {hist_iso[-1]:.4f}")
-    """,
-    name="_"
-)
+    print(f"Done.  shape={shape_choice.value}  F={feature_choice.value}  α={alpha}  β={beta}")
+    print(f"Final L_main = {hist_main[-1]:.3f}   L_shape = {hist_rad[-1]:.3f}   L_iso = {hist_iso[-1]:.4f}")
+
+    return f_idx, hist_iso, hist_main, hist_rad, model, te_X, te_y, tr_X, tr_y
 
 
 @app.cell
@@ -317,7 +363,7 @@ def _(feature_names, model, np, own_accs, te_X, te_y, torch, tr_X, tr_y):
         "gap (head - probe)": [o - p for p, o in zip(probe_accs, own_accs)],
     }).round(3)
     acc_df
-    return (probe_accs,)
+    return probe_accs, te_h2, tr_h2
 
 
 @app.cell
@@ -410,6 +456,64 @@ app._unparsable_cell(
     """,
     name="_"
 )
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### 2D PCA scatter — the shell visualization
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(
+    f_idx,
+    feature_choice,
+    np,
+    plt,
+    r0_slider,
+    r1_slider,
+    te_h2,
+    te_y,
+    tr_h2,
+):
+    # Project hidden 2 to 2D via PCA, color by F. Concentric shells should appear
+    # as an inner cluster (F=0, target radius R0) and an outer ring (F=1, target R1).
+    from sklearn.decomposition import PCA as _PCA
+
+    _mean = tr_h2.mean(axis=0, keepdims=True)
+    _pca = _PCA(n_components=2)
+    _pca.fit(tr_h2 - _mean)
+    _te_2d = _pca.transform(te_h2 - _mean)
+
+    _y_F = te_y.numpy().astype(int)[:, f_idx]
+
+    fig_ring, ax_ring = plt.subplots(figsize=(6, 6))
+    ax_ring.scatter(_te_2d[_y_F == 0, 0], _te_2d[_y_F == 0, 1],
+                    s=6, alpha=0.4, color="tab:blue", label=f"{feature_choice.value}=0")
+    ax_ring.scatter(_te_2d[_y_F == 1, 0], _te_2d[_y_F == 1, 1],
+                    s=6, alpha=0.4, color="tab:orange", label=f"{feature_choice.value}=1")
+
+    # Reference circles at the target radii.
+    # Note: PCA projects into a 2D plane in 64-dim space, so the projected radius is
+    # at most the full norm. The circles are upper bounds on where samples should land
+    # if all variance were in the PCA plane.
+    _theta = np.linspace(0, 2 * np.pi, 200)
+    ax_ring.plot(r0_slider.value * np.cos(_theta), r0_slider.value * np.sin(_theta),
+                 linestyle="--", color="tab:blue", alpha=0.7, label=f"R₀={r0_slider.value:.1f}")
+    ax_ring.plot(r1_slider.value * np.cos(_theta), r1_slider.value * np.sin(_theta),
+                 linestyle="--", color="tab:orange", alpha=0.7, label=f"R₁={r1_slider.value:.1f}")
+
+    ax_ring.set_aspect("equal")
+    ax_ring.set_xlabel("PC1")
+    ax_ring.set_ylabel("PC2")
+    ax_ring.set_title(f"Hidden 2 in PCA top-2 plane, colored by {feature_choice.value}")
+    ax_ring.legend(fontsize=8, loc="upper right")
+    fig_ring.tight_layout()
+    fig_ring
+
+    return
 
 
 if __name__ == "__main__":
