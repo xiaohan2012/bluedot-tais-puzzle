@@ -42,7 +42,7 @@ All submissions that answer parts 1 and 2 correctly will be considered for our T
 The model consists of the 
 `sentence-transformers/all-MiniLM-L6-v2` text encoder followed by a mean pool to get a single 384-dimensional representation of that input. This is then fed through a 5 layer MLP with ReLUs between the layers. The resulting 8 logits are then fed through individual sigmoid functions to recover the predicted probabilities for the 8 features. 
 
-![Model architecture](model_architecture.png)
+![Model architecture](images/model_architecture.png)
 
 The 8 probabilities don't need to sum to 1 because the eight features aren't mutually exclusive. The model was trained with per-feature binary cross-entropy across the eight outputs.
 

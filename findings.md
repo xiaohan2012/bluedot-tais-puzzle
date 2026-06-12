@@ -6,16 +6,16 @@
 
 Linear probe (LogReg, fit on 7000 train, eval on 1500 test) at post-ReLU hidden 2:
 
-| feature     |  test acc |
-|-------------|----------:|
-| number      |     0.975 |
-| question    |     1.000 |
-| color       |     0.971 |
-| food        |     0.985 |
-| sentiment   |     0.982 |
-| **country** | **0.427** |
-| person      |     0.998 |
-| body_part   |     0.980 |
+| feature     |  test acc |     |
+| ----------- | --------: | --- |
+| number      |     0.975 |     |
+| question    |     1.000 |     |
+| color       |     0.971 |     |
+| food        |     0.985 |     |
+| sentiment   |     0.982 |     |
+| **country** | **0.427** |     |
+| person      |     0.998 |     |
+| body_part   |     0.980 |     |
 
 - All features except `country` are linearly separable (≥ 0.97).
 - `country` sits at chance — a single direction cannot recover it.

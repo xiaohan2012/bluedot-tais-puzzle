@@ -29,7 +29,6 @@ def _(mo):
     Diagnostics: probe coefficient heatmap, pairwise cosine matrix between
     probe directions, and accuracy table (linear probe vs model's own head).
     """)
-
     return
 
 
@@ -176,7 +175,6 @@ def _(
 
     print(f"Done.  bottleneck={use_bottleneck.value} k={h2_dim}")
     print(f"Final main BCE = {ep_loss / n_batches:.3f}")
-
     return h2_dim, model, te_X, te_y, tr_X, tr_y
 
 
@@ -250,8 +248,7 @@ def _(
         "own-head acc": own_accs,
     }).round(3)
     acc_df
-
-    return W, probe_accs
+    return W, probe_accs, te_h2, y_te
 
 
 @app.cell(hide_code=True)
@@ -285,7 +282,6 @@ def _(feature_names, own_accs, probe_accs):
     ax_bar.legend(handles=_legend, loc="lower right")
     fig_bar.tight_layout()
     fig_bar
-
     return
 
 
@@ -343,6 +339,177 @@ def _(W, feature_names, np, plt):
     fig_cos.colorbar(im_cos, ax=ax_cos, label="cos angle")
     fig_cos.tight_layout()
     fig_cos
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### PCA of hidden 2 — colored by each feature
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(feature_names, mo):
+    pca_feature_select = mo.ui.multiselect(
+        options=list(feature_names),
+        value=list(feature_names),
+        label="Features to plot",
+    )
+    pca_feature_select
+    return (pca_feature_select,)
+
+
+@app.cell(hide_code=True)
+def _(feature_names, h2_dim, pca_feature_select, plt, te_h2, y_te):
+    # 2-D PCA of hidden 2, one subplot per selected feature
+    from sklearn.decomposition import PCA as _PCA
+
+    _pca = _PCA(n_components=2, random_state=0)
+    _xy = _pca.fit_transform(te_h2)
+    _evr = _pca.explained_variance_ratio_
+
+    _selected = pca_feature_select.value or list(feature_names)
+    _n = len(_selected)
+    _ncols = min(4, _n)
+    _nrows = max(1, (_n + _ncols - 1) // _ncols)
+
+    fig_pca_all, axes_pca_all = plt.subplots(
+        _nrows, _ncols, figsize=(3.5 * _ncols, 3.5 * _nrows),
+        sharex=True, sharey=True, squeeze=False,
+    )
+    _flat = axes_pca_all.flat
+    for _ax_pca, _name in zip(_flat, _selected):
+        _fi = feature_names.index(_name)
+        _y = y_te[:, _fi]
+        _ax_pca.scatter(_xy[_y == 0, 0], _xy[_y == 0, 1], s=4, alpha=0.35, color="tab:blue",   label="0")
+        _ax_pca.scatter(_xy[_y == 1, 0], _xy[_y == 1, 1], s=4, alpha=0.35, color="tab:orange", label="1")
+        _ax_pca.set_title(_name)
+        _ax_pca.set_xticks([]); _ax_pca.set_yticks([])
+    for _ax_pca in list(_flat)[_n:]:
+        _ax_pca.axis("off")
+    fig_pca_all.suptitle(f"PCA of hidden 2 (k={h2_dim}) — PC1={_evr[0]:.2f}, PC2={_evr[1]:.2f}", y=1.00)
+    fig_pca_all.tight_layout()
+    fig_pca_all
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## k-sweep — how many features are encoded linearly vs non-linearly vs not at all
+
+    For each `k`, train a fresh model with `hidden2_dim=k` (seed=0). Classify each of the 8 features into one of three buckets at threshold τ = 0.85:
+
+    - **both**: probe acc ≥ τ **and** own-head acc ≥ τ — encoded linearly at hidden 2
+    - **head only**: own-head ≥ τ but probe < τ — head recovers it, but not from a linear direction (non-linear / superposed encoding)
+    - **neither**: own-head < τ — the model failed to learn this feature at this `k`
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    run_sweep_btn = mo.ui.run_button(label="Run k-sweep")
+    run_sweep_btn
+    return (run_sweep_btn,)
+
+
+@app.cell(hide_code=True)
+def _(
+    Head,
+    feature_names,
+    mo,
+    nn,
+    np,
+    run_sweep_btn,
+    te_emb,
+    te_labels,
+    torch,
+    tr_emb,
+    tr_labels,
+):
+    # k-sweep: train, probe, classify per feature. Triggered by run_sweep_btn.
+    mo.stop(not run_sweep_btn.value, mo.md("Press the button to run the sweep."))
+
+    from sklearn.linear_model import LogisticRegression as _LR_s
+    import pandas as _pd_s
+
+    K_VALUES = list(range(2, 17))
+    TAU = 0.85
+
+    def _train_and_eval(k, seed=0, n_epochs=30, batch_size=128, lr=1e-3):
+        torch.manual_seed(seed)
+        m = Head(hidden2_dim=k)
+        opt_ = torch.optim.Adam(m.parameters(), lr=lr)
+        bce_ = nn.BCEWithLogitsLoss()
+        n = tr_emb.shape[0]
+        tr_y_ = torch.from_numpy(tr_labels)
+        for _ in range(n_epochs):
+            perm = torch.randperm(n)
+            m.train()
+            for s in range(0, n, batch_size):
+                idx = perm[s:s+batch_size]
+                logits = m(tr_emb[idx])
+                loss = bce_(logits, tr_y_[idx])
+                opt_.zero_grad(); loss.backward(); opt_.step()
+        m.eval()
+        with torch.no_grad():
+            tr_h2_ = m.hidden2(tr_emb).numpy()
+            te_h2_ = m.hidden2(te_emb).numpy()
+            te_logits_ = m(te_emb).numpy()
+        y_tr_ = tr_labels.astype(int)
+        y_te_ = te_labels.astype(int)
+        probe = []
+        head  = []
+        for _fi in range(8):
+            lr_ = _LR_s(max_iter=2000).fit(tr_h2_, y_tr_[:, _fi])
+            probe.append(float(lr_.score(te_h2_, y_te_[:, _fi])))
+            head.append(float(((te_logits_[:, _fi] > 0).astype(int) == y_te_[:, _fi]).mean()))
+        return np.array(probe), np.array(head)
+
+    _rows = []
+    _per_feature_rows = []
+    for _k in K_VALUES:
+        print(f"k={_k:>2} ...", end=" ", flush=True)
+        _p, _h = _train_and_eval(_k)
+        _both  = int(((_p >= TAU) & (_h >= TAU)).sum())
+        _head_only = int(((_p < TAU) & (_h >= TAU)).sum())
+        _neither = int((_h < TAU).sum())
+        _rows.append({"k": _k, "both": _both, "head_only": _head_only, "neither": _neither})
+        for _fi, _fname in enumerate(feature_names):
+            _per_feature_rows.append({"k": _k, "feature": _fname,
+                                       "probe": _p[_fi], "head": _h[_fi]})
+        print(f"both={_both} head_only={_head_only} neither={_neither}")
+
+    sweep_df = _pd_s.DataFrame(_rows)
+    sweep_per_feature_df = _pd_s.DataFrame(_per_feature_rows)
+    sweep_df
+    return (sweep_df,)
+
+
+@app.cell(hide_code=True)
+def _(sweep_df):
+    # Stacked bar of the sweep
+    import matplotlib.pyplot as _plt_s
+
+    fig_sw, _ax = _plt_s.subplots(figsize=(9, 4.5))
+    _x = sweep_df["k"].values
+    _ax.bar(_x, sweep_df["both"],     color="tab:green",  label="both (linear at hidden 2)")
+    _ax.bar(_x, sweep_df["head_only"], bottom=sweep_df["both"],
+            color="tab:orange", label="head only (non-linear)")
+    _ax.bar(_x, sweep_df["neither"],
+            bottom=sweep_df["both"] + sweep_df["head_only"],
+            color="tab:red", label="neither (not learned)")
+    _ax.set_xlabel("hidden-2 width k")
+    _ax.set_ylabel("# features (out of 8)")
+    _ax.set_title("Feature classification across k  (τ=0.85)")
+    _ax.set_xticks(_x)
+    _ax.set_ylim(0, 8.5)
+    _ax.legend(fontsize=9, loc="lower right")
+    fig_sw.tight_layout()
+    fig_sw
     return
 
 

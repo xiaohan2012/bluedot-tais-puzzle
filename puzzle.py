@@ -92,7 +92,6 @@ def _(mo):
         label="Input source",
     )
     source_choice
-
     return (source_choice,)
 
 
@@ -108,14 +107,13 @@ def _(mo):
         label="Activation layer",
     )
     layer_choice
-
     return (layer_choice,)
 
 
 @app.cell(hide_code=True)
 def _(source_choice):
     # Load BOTH train and test always (train is fit set, test is generalization set).
-    # source_choice still drives what's shown in the histogram / t-SNE / PCA plots.
+    # source_choice still drives what's shown in the histogram / PCA plots.
     import json as _json
 
     with open("data/train.jsonl") as _f:
@@ -135,7 +133,6 @@ def _(source_choice):
 
     feature_names_full = _json.load(open("feature_names.json"))
     print(f"train(fit)={len(tr_texts)}  test(eval)={len(te_texts)}  viz={len(train_texts)} from {source_choice.value}")
-
     return feature_names_full, te_labels, te_texts, tr_labels, tr_texts
 
 
@@ -170,7 +167,6 @@ def _(
         train_acts, train_labels_arr = te_acts, te_labels_arr
 
     print(f"layer slice [:{layer_choice.value}]  tr_acts: {tr_acts.shape}  te_acts: {te_acts.shape}  viz: {train_acts.shape}")
-
     return (
         np,
         te_acts,
@@ -195,7 +191,6 @@ def _(mo):
         label="Country probe classifier",
     )
     clf_choice
-
     return (clf_choice,)
 
 
@@ -209,7 +204,6 @@ def _(feature_names_full, mo):
         label="Comparison feature (LogReg)",
     )
     compare_choice
-
     return (compare_choice,)
 
 
@@ -272,7 +266,6 @@ def _(
     print(f"{'feature':<12} {'classifier':<30} {'train':>8} {'test':>8}")
     for _p in probe_panels:
         print(f"  {_p['name']:<10} {_p['clf']:<30} {_p['train_acc']:>8.3f} {_p['test_acc']:>8.3f}")
-
     return LogisticRegression, probe_panels
 
 
@@ -292,37 +285,34 @@ def _(probe_panels):
         _ax.legend(fontsize=9)
     fig_hist.tight_layout()
     fig_hist
-
     return (plt,)
 
 
 @app.cell(hide_code=True)
 def _(train_acts):
-    # t-SNE on the 7000 × 64 activations (one global embedding, perplexity=30)
-    from sklearn.manifold import TSNE
+    # PCA on the 7000 × 64 activations (one global 2-D embedding)
+    from sklearn.decomposition import PCA
 
-    _tsne = TSNE(n_components=2, perplexity=30, random_state=0, init="pca")
-    tsne_xy = _tsne.fit_transform(train_acts)
-    print("t-SNE done:", tsne_xy.shape)
-
-    return (tsne_xy,)
+    _pca = PCA(n_components=2, random_state=0)
+    pca_xy = _pca.fit_transform(train_acts)
+    print("PCA done:", pca_xy.shape, "explained var ratio:", _pca.explained_variance_ratio_)
+    return (pca_xy,)
 
 
 @app.cell(hide_code=True)
-def _(plt, probe_panels, tsne_xy):
-    # t-SNE scatter: country (left) vs comparison feature (right)
-    fig_tsne, axes_tsne = plt.subplots(1, 2, figsize=(11, 5), sharex=True, sharey=True)
-    for _ax, _p in zip(axes_tsne, probe_panels):
+def _(pca_xy, plt, probe_panels):
+    # PCA scatter: country (left) vs comparison feature (right)
+    fig_pca, axes_pca = plt.subplots(1, 2, figsize=(11, 5), sharex=True, sharey=True)
+    for _ax, _p in zip(axes_pca, probe_panels):
         _y = _p["y_viz"]
-        _ax.scatter(tsne_xy[_y == 0, 0], tsne_xy[_y == 0, 1], s=4, alpha=0.4, color="tab:blue", label="0")
-        _ax.scatter(tsne_xy[_y == 1, 0], tsne_xy[_y == 1, 1], s=4, alpha=0.4, color="tab:orange", label="1")
+        _ax.scatter(pca_xy[_y == 0, 0], pca_xy[_y == 0, 1], s=4, alpha=0.4, color="tab:blue", label="0")
+        _ax.scatter(pca_xy[_y == 1, 0], pca_xy[_y == 1, 1], s=4, alpha=0.4, color="tab:orange", label="1")
         _ax.set_title(_p["name"])
-        _ax.set_xticks([]); _ax.set_yticks([])
+        _ax.set_xlabel("PC1"); _ax.set_ylabel("PC2")
         _ax.legend(fontsize=9, markerscale=2)
-    fig_tsne.suptitle("t-SNE of layer-2 activations, colored by label", y=1.02)
-    fig_tsne.tight_layout()
-    fig_tsne
-
+    fig_pca.suptitle("PCA of layer-2 activations, colored by label", y=1.02)
+    fig_pca.tight_layout()
+    fig_pca
     return
 
 
@@ -367,7 +357,91 @@ def _(LogisticRegression, feature_names_full, np, plt, tr_acts, tr_labels_arr):
         print(f"  {_name:<10} top-5 neurons = {_top.tolist()}   share of |w|_1 = {_frac:.2f}")
 
     fig_coef
+    return
 
+
+@app.cell(hide_code=True)
+def _(
+    feature_names_full,
+    plt,
+    tr_acts,
+    tr_labels_arr,
+    train_acts,
+    train_labels_arr,
+):
+    # Log-odds distribution on country: degree-2 polynomial vs linear LogReg
+    from sklearn.linear_model import LogisticRegression as _LR2
+    from sklearn.preprocessing import PolynomialFeatures as _Poly
+    from sklearn.pipeline import make_pipeline as _mkpipe
+    import numpy as _np2
+
+    _y_tr = tr_labels_arr[:, feature_names_full.index("country")]
+    _y_viz = train_labels_arr[:, feature_names_full.index("country")]
+
+    _lin = _LR2(max_iter=1000).fit(tr_acts, _y_tr)
+    _poly = _mkpipe(_Poly(degree=2, include_bias=False), _LR2(max_iter=2000, C=0.1)).fit(tr_acts, _y_tr)
+
+    _lo_lin = _lin.decision_function(train_acts)
+    _lo_poly = _poly.decision_function(train_acts)
+
+    fig_lo, axes_lo = plt.subplots(1, 2, figsize=(11, 4), sharey=True)
+    for _ax, _lo, _name in [
+        (axes_lo[0], _lo_poly, "Degree-2 poly LogReg"),
+        (axes_lo[1], _lo_lin,  "Linear LogReg"),
+    ]:
+        _bins = _np2.linspace(_lo.min(), _lo.max(), 60)
+        _ax.hist(_lo[_y_viz == 0], bins=_bins, alpha=0.5, color="tab:blue",   label="country=0")
+        _ax.hist(_lo[_y_viz == 1], bins=_bins, alpha=0.5, color="tab:orange", label="country=1")
+        _ax.axvline(0, color="k", lw=0.8, ls="--")
+        _ax.set_title(_name)
+        _ax.set_xlabel("log-odds")
+        _ax.legend(fontsize=9)
+    axes_lo[0].set_ylabel("count")
+    fig_lo.suptitle("Country log-odds distribution at hidden 2", y=1.02)
+    fig_lo.tight_layout()
+    fig_lo
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Per-neuron activation statistics at hidden 2
+
+    For each of the 64 post-ReLU neurons:  mean activation, std, fraction of inputs where it fires (>0), max.
+
+    Neurons are sorted by std (descending) so the "loudest" ones come first. The right column flags neurons that are linearly bright for at least one of the 7 linear features (max |w| / row-max ≥ 0.3).
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(np, train_acts):
+    # Per-neuron summary stats on train_acts — condensed view.
+    # Alive neurons (std > 0) shown individually; dead neurons collapsed into one row.
+    import pandas as _pd
+
+    _mean = train_acts.mean(0)
+    _std  = train_acts.std(0)
+
+    _alive_mask = _std > 0.01
+    _alive_idx = np.where(_alive_mask)[0]
+    _dead_idx  = np.where(~_alive_mask)[0]
+
+    _alive_rows = _pd.DataFrame({
+        "neuron": _alive_idx,
+        "mean":   _mean[_alive_idx],
+        "std":    _std[_alive_idx],
+    }).sort_values("std", ascending=False)
+
+    _dead_row = _pd.DataFrame([{
+        "neuron": f"{len(_dead_idx)} dead neurons",
+        "mean":   float(_mean[_dead_idx].mean()) if len(_dead_idx) else 0.0,
+        "std":    float(_std[_dead_idx].mean())  if len(_dead_idx) else 0.0,
+    }])
+
+    neuron_stats = _pd.concat([_alive_rows, _dead_row], ignore_index=True)
+    neuron_stats
     return
 
 

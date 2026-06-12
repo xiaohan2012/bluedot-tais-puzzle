@@ -52,28 +52,13 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    # Target geometry for the aux loss
-    shape_choice = mo.ui.dropdown(
-        options=["concentric_shells", "two_moons"],
-        value="concentric_shells",
-        label="Target shape for feature F",
-    )
-    shape_choice
-
-    return (shape_choice,)
-
-
-app._unparsable_cell(
-    r"""
-     = mo.ui.dropdown(
+    feature_choice = mo.ui.dropdown(
         options=["number", "question", "color", "food", "sentiment", "country", "person", "body_part"],
         value="sentiment",
         label="Feature F to encode by radius",
     )
-
-    """,
-    name="_"
-)
+    feature_choice
+    return (feature_choice,)
 
 
 @app.cell
@@ -190,7 +175,6 @@ def _(
     nn,
     r0_slider,
     r1_slider,
-    shape_choice,
     te_emb,
     te_labels,
     torch,
@@ -218,38 +202,6 @@ def _(
     batch_size = 128
     n_train = tr_X.shape[0]
 
-    # Two-moons targets: matches sklearn.datasets.make_moons interleaving.
-    # F=0: upper semicircle (cos θ, sin θ) for θ ∈ [0, π]
-    # F=1: lower semicircle shifted to interleave: (1 - cos θ, 0.5 - sin θ)
-    _n_targets = 50
-    _theta = torch.linspace(0.0, float(torch.pi), _n_targets)
-    _moon_0 = torch.stack([torch.cos(_theta),       torch.sin(_theta)], dim=1)         # F=0
-    _moon_1 = torch.stack([1.0 - torch.cos(_theta), 0.5 - torch.sin(_theta)], dim=1)   # F=1
-
-    def shape_loss(h2c, y_F):
-        if shape_choice.value == "concentric_shells":
-            norms = h2c.norm(dim=1)
-            tgt = torch.where(y_F == 1, torch.tensor(R1), torch.tensor(R0))
-            return ((norms - tgt) ** 2).mean()
-        xy = h2c[:, :2]
-        d_0 = ((xy.unsqueeze(1) - _moon_0.unsqueeze(0)) ** 2).sum(dim=2)
-        d_1 = ((xy.unsqueeze(1) - _moon_1.unsqueeze(0)) ** 2).sum(dim=2)
-        return torch.where(y_F == 1, d_1.min(dim=1).values, d_0.min(dim=1).values).mean()
-
-    def iso_loss(h2c, y_F):
-        if shape_choice.value == "concentric_shells":
-            sub = h2c
-        else:
-            sub = h2c[:, 2:]
-        norms = sub.norm(dim=1)
-        dirs = sub / (norms.unsqueeze(1) + 1e-6)
-        mp = (y_F == 1).float().unsqueeze(1)
-        mn = 1.0 - mp
-        n_p = mp.sum().clamp(min=1.0); n_n = mn.sum().clamp(min=1.0)
-        mean_p = (dirs * mp).sum(0) / n_p
-        mean_n = (dirs * mn).sum(0) / n_n
-        return (mean_p - mean_n).pow(2).sum()
-
     hist_main = []
     hist_rad = []
     hist_iso = []
@@ -263,25 +215,34 @@ def _(
             y_all = tr_y[idx]
             y_F = tr_y_F[idx]
 
-            h2 = model.hidden2(x)
-            h2c = h2 - h2.mean(dim=0, keepdim=True)
+            h2 = model.hidden2(x)                       # (B, 64), signed
+            h2c = h2 - h2.mean(dim=0, keepdim=True)     # batch-centered
+            norms = h2c.norm(dim=1)
+            target_R = torch.where(y_F == 1, torch.tensor(R1), torch.tensor(R0))
+            L_radial = ((norms - target_R) ** 2).mean()
 
-            L_shape = shape_loss(h2c, y_F)
-            L_iso = iso_loss(h2c, y_F)
+            dirs = h2c / (norms.unsqueeze(1) + 1e-6)
+            mask_pos = (y_F == 1).float().unsqueeze(1)
+            mask_neg = 1.0 - mask_pos
+            n_pos = mask_pos.sum().clamp(min=1.0)
+            n_neg = mask_neg.sum().clamp(min=1.0)
+            mean_pos = (dirs * mask_pos).sum(dim=0) / n_pos
+            mean_neg = (dirs * mask_neg).sum(dim=0) / n_neg
+            L_iso = (mean_pos - mean_neg).pow(2).sum()
+
             logits = model.l5(torch.relu(model.l4(h2)))
             L_main = bce(logits, y_all)
-            loss = L_main + alpha * L_shape + beta * L_iso
-            opt.zero_grad(); loss.backward(); opt.step()
+            loss = L_main + alpha * L_radial + beta * L_iso
 
-            ep_main += L_main.item(); ep_rad += L_shape.item(); ep_iso += L_iso.item(); n_batches += 1
+            opt.zero_grad(); loss.backward(); opt.step()
+            ep_main += L_main.item(); ep_rad += L_radial.item(); ep_iso += L_iso.item(); n_batches += 1
 
         hist_main.append(ep_main / n_batches)
         hist_rad.append(ep_rad / n_batches)
         hist_iso.append(ep_iso / n_batches)
 
-    print(f"Done.  shape={shape_choice.value}  F={feature_choice.value}  α={alpha}  β={beta}")
-    print(f"Final L_main = {hist_main[-1]:.3f}   L_shape = {hist_rad[-1]:.3f}   L_iso = {hist_iso[-1]:.4f}")
-
+    print(f"Done.  F={feature_choice.value}  α={alpha}  β={beta}  R0={R0}  R1={R1}")
+    print(f"Final L_main = {hist_main[-1]:.3f}   L_radial = {hist_rad[-1]:.3f}   L_iso = {hist_iso[-1]:.4f}")
     return f_idx, hist_iso, hist_main, hist_rad, model, te_X, te_y, tr_X, tr_y
 
 
@@ -405,26 +366,24 @@ def _(mo):
     return
 
 
-app._unparsable_cell(
-    r"""
+@app.cell
+def _(f_idx, feature_choice, np, plt, r0_slider, r1_slider, te_h2, te_y):
     _y_F_te = te_y.numpy().astype(int)[:, f_idx]
     _h2_centered = te_h2 - te_h2.mean(axis=0, keepdims=True)
     _norms = np.linalg.norm(_h2_centered, axis=1)
 
     fig_norm, ax_norm = plt.subplots(figsize=(8, 4))
-    ax_norm.hist(_norms[_y_F_te == 0], bins=50, alpha=0.5, density=True, label=f"{.value}=0", color="tab:blue")
-    ax_norm.hist(_norms[_y_F_te == 1], bins=50, alpha=0.5, density=True, label=f"{.value}=1", color="tab:orange")
+    ax_norm.hist(_norms[_y_F_te == 0], bins=50, alpha=0.5, density=True, label=f"{feature_choice.value}=0", color="tab:blue")
+    ax_norm.hist(_norms[_y_F_te == 1], bins=50, alpha=0.5, density=True, label=f"{feature_choice.value}=1", color="tab:orange")
     ax_norm.axvline(r0_slider.value, linestyle="--", color="tab:blue", alpha=0.6, label=f"R₀={r0_slider.value:.1f}")
     ax_norm.axvline(r1_slider.value, linestyle="--", color="tab:orange", alpha=0.6, label=f"R₁={r1_slider.value:.1f}")
     ax_norm.set_xlabel("‖h₂ − mean(h₂)‖ on test")
     ax_norm.set_ylabel("density")
-    ax_norm.set_title(f"Hidden-2 norm distribution split by {.value}")
+    ax_norm.set_title(f"Hidden-2 norm distribution split by {feature_choice.value}")
     ax_norm.legend()
     fig_norm.tight_layout()
     fig_norm
-    """,
-    name="_"
-)
+    return
 
 
 @app.cell
@@ -435,8 +394,8 @@ def _(mo):
     return
 
 
-app._unparsable_cell(
-    r"""
+@app.cell
+def _(f_idx, feature_choice, np, te_h2, te_y, tr_h2, tr_y):
     # Can a 1-feature linear probe (using only ‖h‖) recover F?
     from sklearn.linear_model import LogisticRegression as _LR
 
@@ -452,10 +411,8 @@ app._unparsable_cell(
     lr_norm.fit(n_tr, y_tr_F)
     acc_norm_probe = lr_norm.score(n_te, y_te_F)
 
-    print(f"1-feature probe (just ‖h‖) on {.value}: test acc = {acc_norm_probe:.3f}")
-    """,
-    name="_"
-)
+    print(f"1-feature probe (just ‖h‖) on {feature_choice.value}: test acc = {acc_norm_probe:.3f}")
+    return
 
 
 @app.cell(hide_code=True)
@@ -512,7 +469,160 @@ def _(
     ax_ring.legend(fontsize=8, loc="upper right")
     fig_ring.tight_layout()
     fig_ring
+    return
 
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## β-sweep — what does the first-moment-direction loss actually do?
+
+    Keep α=0.1, R₀=1, R₁=4, feature=sentiment, seed=0. Sweep β ∈ {0.0, 0.05, 0.5, 2.0}. Report linear-probe acc, own-head acc, norm-only probe acc on sentiment, and the angular class-mean gap `‖mean_pos − mean_neg‖`. Save PCA scatters + per-β bar charts to `plots/beta_sweep_*.png`.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    run_beta_btn = mo.ui.run_button(label="Run β-sweep")
+    run_beta_btn
+    return (run_beta_btn,)
+
+
+@app.cell(hide_code=True)
+def _(
+    HeadShell,
+    feature_names,
+    mo,
+    nn,
+    np,
+    run_beta_btn,
+    te_emb,
+    te_labels,
+    torch,
+    tr_emb,
+    tr_labels,
+):
+    mo.stop(not run_beta_btn.value, mo.md("Press the button to run."))
+
+    import matplotlib.pyplot as _plt
+    import pandas as _pd
+    from sklearn.linear_model import LogisticRegression as _LR
+    from sklearn.decomposition import PCA as _PCA
+    import os as _os
+
+    _os.makedirs("plots", exist_ok=True)
+
+    _BETAS = [0.0, 0.05, 0.5, 2.0]
+    _ALPHA = 0.1
+    _R0, _R1 = 1.0, 4.0
+    _N_EPOCHS = 40
+    _BS = 128
+    _F_NAME = "sentiment"
+    _f_idx_b = feature_names.index(_F_NAME)
+
+    def _train_b(_beta):
+        torch.manual_seed(0)
+        m = HeadShell(hidden2_dim=64)
+        opt_ = torch.optim.Adam(m.parameters(), lr=1e-3)
+        bce_ = nn.BCEWithLogitsLoss()
+        tr_y_ = torch.from_numpy(tr_labels)
+        tr_y_F = tr_y_[:, _f_idx_b]
+        n_ = tr_emb.shape[0]
+        for _ in range(_N_EPOCHS):
+            perm = torch.randperm(n_)
+            m.train()
+            for s in range(0, n_, _BS):
+                idx = perm[s:s+_BS]
+                h2 = m.hidden2(tr_emb[idx])
+                h2c = h2 - h2.mean(0, keepdim=True)
+                norms_ = h2c.norm(dim=1)
+                tgt_R = torch.where(tr_y_F[idx] == 1, torch.tensor(_R1), torch.tensor(_R0))
+                L_rad = ((norms_ - tgt_R)**2).mean()
+                dirs_ = h2c / (norms_.unsqueeze(1) + 1e-6)
+                mp = (tr_y_F[idx] == 1).float().unsqueeze(1); mn = 1 - mp
+                np_ = mp.sum().clamp(min=1.0); nn_ = mn.sum().clamp(min=1.0)
+                mean_p = (dirs_ * mp).sum(0) / np_
+                mean_n = (dirs_ * mn).sum(0) / nn_
+                L_iso_ = (mean_p - mean_n).pow(2).sum()
+                logits_ = m.l5(torch.relu(m.l4(h2)))
+                L_m = bce_(logits_, tr_y_[idx])
+                loss = L_m + _ALPHA * L_rad + _beta * L_iso_
+                opt_.zero_grad(); loss.backward(); opt_.step()
+        return m
+
+    def _evaluate_b(m):
+        m.eval()
+        with torch.no_grad():
+            tr_h2 = m.hidden2(tr_emb).numpy()
+            te_h2 = m.hidden2(te_emb).numpy()
+            te_logits = m(te_emb).numpy()
+        y_tr = tr_labels.astype(int)
+        y_te = te_labels.astype(int)
+        probe, head = [], []
+        for _fi in range(8):
+            lr_ = _LR(max_iter=2000).fit(tr_h2, y_tr[:, _fi])
+            probe.append(float(lr_.score(te_h2, y_te[:, _fi])))
+            head.append(float(((te_logits[:, _fi] > 0).astype(int) == y_te[:, _fi]).mean()))
+        n_tr = np.linalg.norm(tr_h2 - tr_h2.mean(0, keepdims=True), axis=1).reshape(-1, 1)
+        n_te = np.linalg.norm(te_h2 - te_h2.mean(0, keepdims=True), axis=1).reshape(-1, 1)
+        norm_acc = float(_LR(max_iter=1000).fit(n_tr, y_tr[:, _f_idx_b]).score(n_te, y_te[:, _f_idx_b]))
+        te_c = te_h2 - te_h2.mean(0, keepdims=True)
+        te_norms = np.linalg.norm(te_c, axis=1, keepdims=True) + 1e-9
+        te_dirs = te_c / te_norms
+        yF = y_te[:, _f_idx_b]
+        mean_p2 = te_dirs[yF == 1].mean(0)
+        mean_n2 = te_dirs[yF == 0].mean(0)
+        angular_gap = float(np.linalg.norm(mean_p2 - mean_n2))
+        return {"probe": probe, "head": head, "norm_probe": norm_acc,
+                "angular_gap": angular_gap, "te_h2": te_h2, "y_te": y_te}
+
+    _rows = []
+    for _beta in _BETAS:
+        print(f"β={_beta:.2f} ... training", flush=True)
+        _m = _train_b(_beta)
+        _R = _evaluate_b(_m)
+        _rows.append({
+            "beta": _beta,
+            "sent_probe": _R["probe"][_f_idx_b],
+            "sent_head":  _R["head"][_f_idx_b],
+            "norm_probe": _R["norm_probe"],
+            "angular_gap": _R["angular_gap"],
+            "worst_other_head": min(h for _fi, h in enumerate(_R["head"]) if _fi != _f_idx_b),
+        })
+        _xy = _PCA(n_components=2, random_state=0).fit_transform(_R["te_h2"] - _R["te_h2"].mean(0, keepdims=True))
+        _yF = _R["y_te"][:, _f_idx_b]
+        _fig, _ax = _plt.subplots(figsize=(5.5, 5))
+        _ax.scatter(_xy[_yF == 0, 0], _xy[_yF == 0, 1], s=6, alpha=0.4, color="tab:blue",   label="sent=0")
+        _ax.scatter(_xy[_yF == 1, 0], _xy[_yF == 1, 1], s=6, alpha=0.4, color="tab:orange", label="sent=1")
+        _theta_b = np.linspace(0, 2*np.pi, 200)
+        _ax.plot(_R0*np.cos(_theta_b), _R0*np.sin(_theta_b), "--", color="tab:blue",   alpha=0.6)
+        _ax.plot(_R1*np.cos(_theta_b), _R1*np.sin(_theta_b), "--", color="tab:orange", alpha=0.6)
+        _ax.set_aspect("equal"); _ax.set_xlabel("PC1"); _ax.set_ylabel("PC2")
+        _ax.set_title(f"β={_beta}  probe={_R['probe'][_f_idx_b]:.2f}  head={_R['head'][_f_idx_b]:.2f}  norm={_R['norm_probe']:.2f}")
+        _ax.legend(fontsize=9)
+        _fig.tight_layout()
+        _fname = f"plots/beta_sweep_pca_beta{_beta}.png".replace(".0.png", "0.png")
+        _fig.savefig(_fname, dpi=120)
+        _plt.close(_fig)
+
+        _fig2, _ax2 = _plt.subplots(figsize=(9, 3.5))
+        _xb = np.arange(8); _w = 0.4
+        _ax2.bar(_xb - _w/2, _R["probe"], _w, label="probe", color="tab:blue")
+        _ax2.bar(_xb + _w/2, _R["head"],  _w, label="own head", color="tab:orange")
+        _ax2.axhline(0.5, color="k", lw=0.6, ls="--")
+        _ax2.set_xticks(_xb); _ax2.set_xticklabels(feature_names, rotation=30)
+        _ax2.set_ylim(0, 1.05); _ax2.set_ylabel("test acc")
+        _ax2.set_title(f"β={_beta}  (α=0.1, sentiment)")
+        _ax2.legend(fontsize=9, loc="lower right")
+        _fig2.tight_layout()
+        _fname2 = f"plots/beta_sweep_bars_beta{_beta}.png".replace(".0.png", "0.png")
+        _fig2.savefig(_fname2, dpi=120)
+        _plt.close(_fig2)
+
+    beta_sweep_df = _pd.DataFrame(_rows).round(3)
+    print(beta_sweep_df.to_string(index=False))
+    beta_sweep_df
     return
 
 

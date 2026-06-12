@@ -35,7 +35,7 @@ Single optimizer over body + adversary, GRL flipping gradients. Linear ramp 0 �
 
 Loss curves (showed mild waviness, no real adversary pressure):
 
-![Run 1 losses](plots/q3_loss_lambda1_K1.png)
+![Run 1 losses](images/q3_loss_lambda1_K1.png)
 
 ### Run 2: GRL, λ_max = 3.0
 
@@ -63,7 +63,7 @@ Standard GAN-stability remedy: separate optimizer for adversary at 5× the body'
 
 **Result:** Training stabilized — the oscillation is gone. But linear probe still recovers F at 0.93. In-loop adversary loss noisy around chance; a post-hoc L-BFGS probe finds the linear direction the in-loop SGD adversary couldn't track. **Moving-target gap.**
 
-![Run 3 losses](plots/q3_loss_lambda1.5_K3.png)
+![Run 3 losses](images/q3_loss_lambda1.5_K3.png)
 
 ### Run 4: K=10 inner steps + adversary reinit every 5 epochs, λ_max = 2.0
 
@@ -78,7 +78,7 @@ To close the moving-target gap: more inner steps and periodic reinit of the adve
 
 **Result:** Best clean equilibrium so far — adversary BCE pinned at chance for ~45 epochs, main BCE drops smoothly. Linear probe drops 20pp. Other 7 features fully preserved.
 
-![Run 4 losses](plots/q3_loss_lambda2_K10_reinit5.png)
+![Run 4 losses](images/q3_loss_lambda2_K10_reinit5.png)
 
 But **still a failure on both goals**:
 - Linear probe at 0.77 is *not* chance — sentiment remains partially linearly readable.

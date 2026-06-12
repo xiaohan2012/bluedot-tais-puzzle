@@ -1,6 +1,4 @@
-venv/
-__marimo__/
-.claude/
+.obsidian/
 __pycache__/
 *.pyc
 .DS_Store

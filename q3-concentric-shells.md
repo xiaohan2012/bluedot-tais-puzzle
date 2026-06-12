@@ -145,46 +145,6 @@ Same setup, target=sentiment, varied α (radial) and β (iso):
 
 This is the cleanest "intentional non-linear encoding" result — a controlled, surgical change with a verified mechanism.
 
-## Attempted variant — two moons (kept in notebook as open question)
-
-The notebook has a `shape_choice` dropdown that switches between `concentric_shells` and `two_moons`. The moons option pulls the first 2 dims of hidden 2 toward sklearn-style interleaved crescents, while `L_iso` scrubs sentiment from the remaining 62 dims.
-
-**Result on sentiment with the same α=0.10, β=0.05 settings that worked for shells:**
-
-| feature | probe | own-head | gap |
-|---|---:|---:|---:|
-| sentiment | 0.990 | 0.989 | −0.001 |
-| (other 7 all 0.97+) | | | |
-
-The intervention had **no effect**. Probe ≈ head ≈ 0.99 for every feature.
-
-**Why we believe it failed (open question — not fully diagnosed):**
-
-1. **Two moons is not maximally non-linearly separable.** A linear classifier on sklearn's standard `make_moons` already gets ~85–90% — well above chance. So even in the best case, the probe ceiling is much higher than for shells.
-2. **The aux loss only constrains 2 of 64 dims.** Even though `L_iso` (β=0.05) is supposed to scrub sentiment from the remaining 62, in practice the model seems to keep sentiment linearly recoverable somewhere. Whether this is too-weak β, too-narrow iso scope, or a more structural issue with mixing a low-dim shape constraint with high-dim representation is not clear.
-3. **Higher β didn't help in quick checks.** Cranking β further damages other features (as we saw with shells) without closing the gap on sentiment.
-
-**Open questions worth chasing:**
-
-- Would a much stronger iso (`β ~ 1`) combined with a bigger moon-plane (project all 64 dims onto a learned 2D plane via a linear layer, then pull to crescents) actually scrub sentiment from the full representation?
-- Is the failure mode specific to moons (mild non-linearity), or would the same architecture fail with stronger non-linear shapes like spirals or checkerboards?
-- Does the model use the **direction perpendicular to the moon plane** to encode sentiment linearly even when iso is applied to dims 2:? A probe restricted to dims 0:2 alone would diagnose this.
-
-We keep the moons option in the notebook as a documented null result; understanding why it doesn't deliver the contrast that shells does is a real research-question-shaped gap, not just an implementation oversight.
-
-## Other candidate shapes (not implemented)
-
-The recipe — `L_main + α·L_shape + β·L_iso` with `L_iso` scrubbing the linear direction — should generalize to any target geometry where a hyperplane fails to separate the two classes. Candidates we considered but didn't run:
-
-- **Nested rings (multi-shell).** Generalization of concentric shells with radii alternating between two values across multiple concentric layers: `R₀, R₁, R₀, R₁, …`. Linear probe near chance for any number of rings (radius is still the only class signal). Quantitative knob: number of rings. Should work the same as shells but with multi-modal radius distribution.
-- **XOR / checkerboard on 2 dims.** Tile a 2D plane into N×N alternating squares; F=1 in the "even" cells, F=0 in the "odd" cells. Polynomial probes of degree < N fail; degree N succeeds. Quantitative knob: N (grid resolution). Maps directly to the "polynomial degree required" framing from the bottleneck experiment.
-- **Spirals.** Two interleaved Archimedean spirals, one per class. Even high-degree polynomials struggle as the number of spiral turns grows. Hardest "natural" non-linear shape on the menu.
-- **Möbius strip / non-orientable surface.** F flips as you traverse a closed loop on the strip. Genuinely exotic topology; verification is the hard part — there's no single low-dim visualization that makes non-orientability obvious.
-- **N-fold rotational parity.** F is the parity of an angular wedge: even wedges are F=1, odd are F=0. Polynomial degree needed to separate scales with N.
-- **Sphere-cap clusters.** F=1 lives in K disjoint small caps on a sphere; F=0 fills the rest. Linear probe fails when K ≥ 2 (no half-plane covers disjoint caps cleanly). Closest cousin of the original puzzle's country quadric.
-
-All of these would slot into the existing notebook as additional `shape_choice` options — the only changes are `L_shape` (per-shape target) and possibly which subspace `L_iso` is applied to. The shells result suggests the **maximally non-linear** shapes (rings, spirals, sphere-cap clusters) should reproduce the clean +0.4 gap; the **mildly non-linear** ones (moons, checkerboard at small N) will probably underperform like moons did.
-
 ## Not pursued
 
 - **Multi-feature shells.** Would need 2ᵏ distinct radii for k features (4 for two features, 256 for all 8). Possible for k=2; impractical for k=8.

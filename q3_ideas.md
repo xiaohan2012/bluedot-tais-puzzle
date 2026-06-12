@@ -6,7 +6,7 @@ Below: candidate dimensions, each with the core idea, why it's interesting, and 
 
 ---
 
-## 1. Harder separability (high-degree polynomial)
+## ~~1. Harder separability (high-degree polynomial)~~
 
 - **Idea:** make F require a polynomial of degree ≥ k to separate (quadric was k=2).
 - **Why interesting:** a clean, quantitative weirdness metric — show that degree-(k−1) probes fail while degree-k succeeds.
@@ -16,7 +16,7 @@ Below: candidate dimensions, each with the core idea, why it's interesting, and 
   - XOR forces degree-k separability — model can't shortcut it.
 - **Test:** show degree-(k−1) poly LogReg fails, degree-k succeeds, MLP succeeds.
 
-## 2. Topologically structured (non-trivial manifold)
+## 2. ~~Topologically structured (non-trivial manifold)~~
 
 - **Idea:** encode F on a circle, torus, sphere, or Möbius strip.
 - **Why interesting:** mirrors Engels et al. "Not All Language Model Features Are Linear" (days-of-week on a circle). Genuinely novel geometry, not just "harder polynomial."
@@ -26,7 +26,7 @@ Below: candidate dimensions, each with the core idea, why it's interesting, and 
   - For a binary version: bucket angle into 2 halves but reward the model only if its hidden 2 activations form a coherent ring.
 - **Test:** PCA top-2 of hidden 2 activations for country-bearing texts should show a circular layout. Probe with `arctan2(PC1, PC2)` ≈ θ.
 
-## 3. Superposed / distributed encoding
+## 3. ~~Superposed / distributed encoding~~ (same vein as our capacity pressure study)
 
 - **Idea:** encode F across many dimensions such that no low-rank projection reveals it. Sparse-coding-style superposition (Anthropic toy models).
 - **Why interesting:** matches the empirical finding that real LLMs encode many more features than they have neurons by overlapping directions.
@@ -36,7 +36,7 @@ Below: candidate dimensions, each with the core idea, why it's interesting, and 
   - The model must pack 8 features into 16 dimensions, forcing overlap; F lives in a multi-direction code.
 - **Test:** show that no rank-1, rank-2 linear probe recovers F, but a sparse autoencoder on hidden 2 finds the F direction.
 
-## 4. Compositional / hierarchical
+## 4. ~~Compositional / hierarchical~~
 
 - **Idea:** F is computed by a multi-step routine — e.g., model first builds a latent that combines two sub-features, then reads F from the latent.
 - **Why interesting:** small mechanistic circuit, more "model is reasoning" than "model is geometrying."
