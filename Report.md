@@ -1,5 +1,15 @@
 # Report
 
+## Introduction
+
+This report documents our exploration of the three puzzle tasks. Code and notebooks are available at [github.com/xiaohan2012/bluedot-tais-puzzle](https://github.com/xiaohan2012/bluedot-tais-puzzle).
+
+It is organized as follows.
+
+- **`country` feature cannot be linearly separated** (Q1): we identify `country` as the feature that is not linearly represented at hidden layer 2, using per-feature linear probes.
+- **How is country feature represented?** (Q2): we show that `country` is separable by a quadratic surface, supported by a 2D PCA visualization and a degree-2 polynomial probe.
+- **Other interesting representations** (Q3): we explore three ways to induce non-linear representations at hidden layer 2 — capacity pressure via a bottleneck, concentric shells via auxiliary losses, and an adversarial gradient-reversal attempt (which fails, with reasons named).
+
 ## `country` feature cannot be linearly separated
 
 `country` is the feature that is not represented linearly at that specified layer activations.
@@ -70,9 +80,11 @@ The performance boost is also backed by the bi-modal shape in its log-odds distr
 
 ## Other interesting representations
 
-Each subsection below describes an exploration on a specific type of representation. The following content is organized as follows.
+Each subsection below describes an exploration on a specific type of representation.
 
-TODO: add a table
+- **Capacity pressure inspired by superposition**: shrink hidden layer 2 to force features to share neurons.
+- **Concentric shells**: push the two classes onto nested shells around a shared centroid via auxiliary losses.
+- **Towards general linear inseparability via gradient reversal (a failed attempt)**: adversarially discourage *any* linearly separable representation using a gradient-reversal layer.
 ### Capacity pressure inspired by superposition
 
 In this experiment, we reduce the size of the 2nd hidden layer, which we studied in the previous tasks, in order to introduce "capacity pressure".
